@@ -1,0 +1,16 @@
+pillow # для работы с изображениями
+pillow-heif # для поддержки формата HEIC
+gradio # для создания веб-интерфейса
+transformers # для моделей обработки изображений и текста
+langchain # для работы с векторными базами данных
+chromadb # для хранения векторных представлений
+huggingface_hub # для загрузки моделей
+requests # для работы с API
+urllib3 # для обработки HTTP-запросов
+tqdm # для отображения прогресса
+torch
+langchain-community
+sentence-transformers
+hf_xet
+googletrans
+# pip install git+https://github.com/openai/CLIP.git

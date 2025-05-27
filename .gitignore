@@ -1,0 +1,43 @@
+# IDE and environment files
+.idea/
+.vscode/*
+# !.vscode/launch.json
+**/.env
+
+# Python
+**/__pycache__/
+*.pyc
+**/.DS_Store
+
+# Notebooks
+*.ipynb
+./ipynb_checkpoints/
+
+# Databases
+**/*.db
+**/*.db3
+**/*.sqlite
+**/*.sqlite3
+**/*.bin
+
+# Data files
+**/*.json
+**/*.csv
+**/*.xlsx
+*.graphml
+*.gpickle
+*.zip
+*.gz
+*.log
+*.pdf
+**/*.txt
+!**/requirements*.txt
+*.pt
+*.pkl
+*.pickle
+models/*
+
+# Scratch code and testing (not unittests)
+**/scratch
+**/unittests
+**/tests
