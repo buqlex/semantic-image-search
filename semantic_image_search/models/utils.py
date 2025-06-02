@@ -15,3 +15,7 @@ def get_accelerator() -> torch.device:
     if torch.backends.mps.is_available():
         return torch.device("mps")
     return torch.device("cpu")
+
+
+print(f"CUDA available: {torch.cuda.is_available()}")
+print(f"Device: {get_accelerator()}")

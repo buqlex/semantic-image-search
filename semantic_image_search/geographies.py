@@ -20,8 +20,6 @@ class GeonamesReverseGeocoder:
     """
     BASE_URL = "http://api.geonames.org"
     PRECISION = 3
-
-    # See https://www.geonames.org/export/codes.html
     FEATURE_CODES = (
         "PRK",
         "RGN",
@@ -80,16 +78,18 @@ class GeonamesReverseGeocoder:
         cache_hit = self.__check_cache(latitude=latitude, longitude=longitude, route=route)
         if cache_hit is not None:
             return cache_hit
-        
-        response = self.__session.get(
-            url=urljoin(self.BASE_URL, route),
-            params=self._build_request(latitude=latitude, longitude=longitude)
-        )
 
-        if response.status_code == 200:
-            data = response.json()
-        else:
-            data = {"geonames": []}
+        try:
+            response = self.__session.get(
+                url=urljoin(self.BASE_URL, route),
+                params=self._build_request(latitude=latitude, longitude=longitude)
+            )
+            response.raise_for_status()
+        except requests.RequestException as e:
+            print(f"Ошибка сетевого запроса к Geonames: {e}")
+            return {"geonames": []}
+
+        data = response.json()
         self.__upsert_cache(latitude=latitude, longitude=longitude, route=route, data=data)
         return data
 

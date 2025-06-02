@@ -18,7 +18,7 @@ def get_project_structure(base_dir):
         tree_lines.append(f"{'│   ' * (level - 1)}{indent}{folder}/")
 
         for f in sorted(files):
-            if f.endswith('.py'):
+            if f.endswith('.py') or f.endswith('.bin') or f.endswith('.sqlite3'):
                 file_indent = '│   ' * level + '└── '
                 tree_lines.append(f"{file_indent}{f}")
 

@@ -8,6 +8,8 @@ from functools import cache
 import warnings
 import argparse
 import os
+import time
+import socket
 
 from PIL import Image, ExifTags
 import gradio as gr
@@ -15,21 +17,30 @@ import gradio as gr
 from semantic_image_search.models.documents import ImageVectorStore
 from semantic_image_search.models.rerank import Reranker
 
-from googletrans import Translator
+try:
+    from googletrans import Translator
+    translator = Translator()
+except ImportError:
+    warnings.warn("googletrans is not installed, translation will be skipped")
+    translator = None
 
-translator = Translator()
+try:
+    import clip
+except ImportError:
+    warnings.warn("CLIP is not installed, reranking will be disabled")
+    clip = None
+
 rerankers = {
     "standard": None,
-    "fast": Reranker("ViT-B/32"),
-    "accurate": Reranker("ViT-L/14")
+    "fast": Reranker("ViT-B/32") if clip else None,
+    "accurate": Reranker("ViT-L/14") if clip else None
 }
-
 
 try:
     import pillow_heif
     pillow_heif.register_heif_opener()
 except ImportError:
-    warnings.warn("pillow-heif is not installed, HEIC images will not render")
+    raise ImportError("Для поддержки HEIC изображений установите 'pillow-heif': pip install pillow-heif")
 
 warnings.filterwarnings("ignore")
 parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -38,6 +49,7 @@ args = parser.parse_args()
 
 chroma_path = args.chroma_path if args.chroma_path is not None else os.getenv("MODEL_CACHE_DIR")
 photo_store = ImageVectorStore(chroma_persist_path=chroma_path)
+print(f"Количество изображений в базе: {len(photo_store)}")
 OUTPUT_TYPE = "pil"
 
 @cache
@@ -45,15 +57,19 @@ def _get_rotation_key() -> int:
     return max(ExifTags.TAGS.items(), key=lambda x: x[1] == 'Orientation', default=(-1, None))[0]
 
 def search(query: str, score_threshold: float, rerank_mode: str, lang: str) -> List[Tuple[Image.Image, str]]:
-    if lang == "ru":
-        query = translator.translate(query, src="ru", dest="en").text
+    if lang == "ru" and translator is not None:
+        try:
+            query = translator.translate(query, src="ru", dest="en").text
+        except Exception as e:
+            print(f"Ошибка перевода: {e}")
+            query = query  # Используем исходный запрос
 
-    hits = photo_store.query(query, n_results=200)  # получаем всё
+    hits = photo_store.query(query, n_results=200)  # количество результатов
 
     paths = [hit.metadata["path"] for hit, score in hits]
     scores = [score for _, score in hits]
 
-    if rerank_mode != "standard":
+    if rerank_mode != "standard" and rerankers[rerank_mode] is not None:
         reranker = rerankers[rerank_mode]
         reranked = reranker.rerank_images(paths, query)
         hits = [(next(h for h in hits if h[0].metadata["path"] == path)[0], 1 - sim) for path, sim in reranked]
@@ -67,19 +83,27 @@ def search(query: str, score_threshold: float, rerank_mode: str, lang: str) -> L
         score = None
         if isinstance(hit, (tuple, list)):
             hit, score = hit
-        img = Image.open(hit.metadata["path"])
+        try:
+            with Image.open(os.path.join(hit.metadata["path"])) as img:
+                img = img.copy()  # Create a copy to ensure the file is closed
+                if hasattr(img, '_getexif'):
+                    try:
+                        orientation_key = _get_rotation_key()
+                        e = img._getexif()
+                        if e is not None and orientation_key in e:
+                            if e[orientation_key] == 3:
+                                img = img.transpose(Image.ROTATE_180)
+                            elif e[orientation_key] == 6:
+                                img = img.transpose(Image.ROTATE_270)
+                            elif e[orientation_key] == 8:
+                                img = img.transpose(Image.ROTATE_90)
+                    except Exception as e:
+                        print(f"Ошибка обработки EXIF: {e}")
 
-        if hasattr(img, '_getexif'):
-            orientation_key = _get_rotation_key()
-            e = getattr(img, '_getexif')()
-            if e is not None:
-                if e.get(orientation_key) == 3:
-                    img = img.transpose(Image.ROTATE_180)
-                elif e.get(orientation_key) == 6:
-                    img = img.transpose(Image.ROTATE_270)
-                elif e.get(orientation_key) == 8:
-                    img = img.transpose(Image.ROTATE_90)
-        img = img.resize((int(img.size[0] * scale), int(img.size[1] * scale)))
+                img = img.resize((int(img.size[0] * scale), int(img.size[1] * scale)))
+        except Exception as e:
+            print(f"Ошибка загрузки изображения {hit.metadata['path']}: {e}")
+            return Image.new("RGB", (300, 100), color=(255, 255, 255)), "Ошибка загрузки изображения"
 
         if isinstance(score, (float, int)):
             return img, f"Score: {round(score, 2)}"
@@ -91,9 +115,12 @@ def search(query: str, score_threshold: float, rerank_mode: str, lang: str) -> L
     if OUTPUT_TYPE == "filepath":
         return [(hit.metadata["path"], f"Score: {round(score, 2)}") for hit, score in hits]
     else:
-        with ThreadPoolExecutor() as executor:
-            return list(executor.map(_load, hits))
-
+        try:
+            with ThreadPoolExecutor(max_workers=4) as executor:  # Limit to 4 workers
+                return list(executor.map(_load, hits))
+        except Exception as e:
+            print(f"Ошибка многопоточной загрузки: {e}")
+            return [_load(hit) for hit in hits]
 
 LANG_TEXT = {
     "en": {
@@ -113,7 +140,6 @@ LANG_TEXT = {
         "mode": "Режим поиска"
     }
 }
-
 
 def build_app() -> gr.Blocks:
     with gr.Blocks(theme=gr.themes.Soft(), title="Semantic photo search") as demo:
@@ -158,4 +184,14 @@ def build_app() -> gr.Blocks:
 
 if __name__ == '__main__':
     app = build_app()
-    app.queue(max_size=10).launch(server_name="0.0.0.0")
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            app.queue(max_size=10).launch(server_name="0.0.0.0", server_port=7860)
+            break
+        except socket.error as e:
+            if "too many open files" in str(e):
+                print(f"Ошибка: слишком много открытых файлов. Повторная попытка {attempt + 1}/{max_retries}...")
+                time.sleep(2)
+            else:
+                raise e

@@ -58,29 +58,19 @@ class SqliteReaderBase:
         )) IN ({', '.join(['?'] * len(self.ALLOWED_TYPES))})"""
 
     def file_count(self, dir_path: str) -> int:
-        """Count the number of files that are of the allowed types
-
-        Parameters
-        ----------
-        dir_path : str
-            Album path
-
-        Returns
-        -------
-        int
-            Count of allowed media files
-        """
-
-        return sum(
-            1 for _ in os.listdir(dir_path)
-            if os.path.isfile(os.path.join(dir_path, _))
-            and _.split('.')[-1].lower() in self.ALLOWED_TYPES
-        )
+        try:
+            return sum(
+                1 for _ in os.listdir(dir_path)
+                if os.path.isfile(os.path.join(dir_path, _))
+                and _.split('.')[-1].lower() in self.ALLOWED_TYPES
+            )
+        except Exception as e:
+            print(f"Ошибка подсчета файлов в {dir_path}: {e}")
+            return 0
 
     @property
     def albums(self):
-        """Lookup of supported albums in the photo library
-        """
+        pass
 
     @property
     def count(self) -> int | None:
@@ -141,6 +131,10 @@ class DigikamReader(SqliteReaderBase):
                 root = None
                 if sys.platform == "linux":
                     root = "/"
+                elif sys.platform == "win32":
+                    root = "C:\\"
+                elif sys.platform == "darwin":
+                    root = "/"
                 else:
                     warnings.warn(f"Platform `{sys.platform}` is not yet supported")
                     continue
@@ -193,8 +187,7 @@ class DigikamReader(SqliteReaderBase):
 
         self._cursor.execute(query, (album_id, *self.ALLOWED_TYPES,))
         for row in self._cursor:
-            row_dict = dict(row)  # Преобразуем в изменяемый словарь
-
+            row_dict = dict(row)
             relative_path: str = row_dict["relativePath"]
             if relative_path.startswith('/'):
                 relative_path = relative_path[1:]
@@ -234,18 +227,11 @@ class DigikamReader(SqliteReaderBase):
             album_root = self.__volume_map[row["albumRoot"]]
 
             path = os.path.join(os.path.expanduser("~/Pictures"), relative_path)
-            print('>>>>>>>>>>>>>>>>>>>', path)
-            # Используем абсолютный путь, если relative уже начинается с /home/...
-            # if os.path.isabs(album_root["relative"]):
-            #     path = os.path.join(album_root["relative"], relative_path)
-            # else:
-            #     path = os.path.join(album_root["root"], album_root["relative"], relative_path)
 
             output[relative_path] = {
                 "album_id": row["id"],
-                "name": relative_path.replace('/', ' :: '),
+                "name": relative_path.replace(os.sep, ' :: '),
                 "path": path,
-                # "count": self.file_count(path)
                 "count": row["size"]
             }
         return output
@@ -297,8 +283,8 @@ class MacPhotosReader(SqliteReaderBase):
                 source = sqlite3.connect(database=os.path.join(tmpdir, core_db))
                 self._connection = sqlite3.connect(':memory:')
                 source.backup(self._connection)
-            except Exception as ex:
-                print(ex)
+            except Exception as e:
+                print(f"Ошибка копирования базы данных: {e}")
         self._connection.row_factory = sqlite3.Row
         self._cursor = self._connection.cursor()
 

@@ -4,6 +4,7 @@ from enum import Enum
 class Supported(Enum):
     MACOS_PHOTO_LIBRARY = "macos_photo_library"
     DIGIKAM_PHOTO_LIBRARY = "digikam_photo_library"
+    WINDOWS_PHOTO_LIBRARY = "windows_photo_library"
 
     def __str__(self) -> str:
         return self.name

@@ -11,7 +11,7 @@ try:
     HEIC = True
 except ImportError:
     HEIC = False
-    warnings.warn("pillow-heif is not installed, HEIC images will be skipped")
+    warnings.warn("pillow-heif is not installed, HEIC images will be skipped. Install with: pip install pillow-heif")
 
 from semantic_image_search.galleries.database import (
     DigikamReader,
@@ -25,6 +25,7 @@ from semantic_image_search.models.schema import ImageData
 from semantic_image_search.models.utils import get_accelerator
 from semantic_image_search.utils import describe_people_in_scene, describe_geo_location
 from semantic_image_search.constants import Supported
+from semantic_image_search.galleries.windows_reader import WindowsPhotosReader
 
 
 def batch_caption(images: List[ImageData], captioner: ImageCaption) -> List[ImageData]:
@@ -41,10 +42,13 @@ def batch_caption(images: List[ImageData], captioner: ImageCaption) -> List[Imag
         List of image data objects with updated caption text
     """
 
-    captions = captioner.caption([img.path for img in images])
-
-    for img, caption in zip(images, captions):
-        img.caption = caption
+    try:
+        captions = captioner.caption([img.path for img in images])
+        for img, caption in zip(images, captions):
+            img.caption = caption
+        print(f"Сгенерировано описаний: {len(captions)}")
+    except Exception as e:
+        print(f"Ошибка при генерации описаний: {e}")
     return images
 
 
@@ -65,11 +69,15 @@ def generate_geo_descriptions(image: ImageData, metadata: Media, geocoder: Geona
     """
 
     if metadata.lat and metadata.lon:
-        geos = geocoder.find_nearby(
-            latitude=metadata.lat,
-            longitude=metadata.lon
-        )
-        image.geo_description = describe_geo_location(geos.get("geonames", []))
+        try:
+            geos = geocoder.find_nearby(
+                latitude=metadata.lat,
+                longitude=metadata.lon
+            )
+            image.geo_description = describe_geo_location(geos.get("geonames", []))
+        except Exception as e:
+            print(f"Ошибка геокодирования: {e}")
+            image.geo_description = ""
     return image
 
 
@@ -171,6 +179,24 @@ def stream_macos_albums(
                 yield img_data, record
 
 
+def stream_windows_albums(
+    photo_library_dir: str,
+    albums: List[str]
+) -> Iterator[Tuple[ImageData, Media]]:
+    reader = WindowsPhotosReader(photolibrary_path=photo_library_dir)
+    for album in albums:
+        for record in reader.stream_media_from_album(album_name=str(album)):  # = hash(album)
+            if record.image_file_name.lower().endswith('.heic') and not HEIC:
+                continue
+            img_data = ImageData(
+                path=os.path.join(record.relative_path, record.image_file_name),
+                album_name=album,
+                file_name=record.image_file_name,
+                created=record.creation_date,
+            )
+            yield img_data, record
+
+
 def validate_albums(library_type: Supported, library_dir: str) -> Dict[str, Dict[str, Any]] | None:
     """Checks for album information in the given library. If no albums are found or the library_type type is not
     supported then None is returned.
@@ -193,6 +219,9 @@ def validate_albums(library_type: Supported, library_dir: str) -> Dict[str, Dict
             albums = db.albums
     elif library_type == Supported.MACOS_PHOTO_LIBRARY:
         with MacPhotosReader(photolibrary_path=library_dir) as db:
+            albums = db.albums
+    elif library_type == Supported.WINDOWS_PHOTO_LIBRARY:
+        with WindowsPhotosReader(photolibrary_path=library_dir) as db:
             albums = db.albums
     return albums
 
@@ -234,18 +263,21 @@ def build(
         streamer = stream_digikam_albums
     elif library_type == Supported.MACOS_PHOTO_LIBRARY:
         streamer = stream_macos_albums
+    elif library_type == Supported.WINDOWS_PHOTO_LIBRARY:
+        streamer = stream_windows_albums
     else:
         raise TypeError(f"{library_type.value} is not yet supported")
 
     device = get_accelerator()
     captioner = ImageCaption(device=device, batch_size=16)
-    rev_geo_coder = GeonamesReverseGeocoder(geonames_user=geonames_user)
+    # rev_geo_coder = GeonamesReverseGeocoder(geonames_user=geonames_user)
 
     vector_store = ImageVectorStore(chroma_persist_path=chroma_path, model_kwargs={"device": device})
 
     image_batch = []
     for image, metadata in streamer(photo_library_dir=library_dir, albums=albums):
-        image = generate_geo_descriptions(image, metadata, geocoder=rev_geo_coder)
+        print(f"Обрабатывается изображение: {image.path}")
+        # image = generate_geo_descriptions(image, metadata, geocoder=rev_geo_coder)
         image = generate_people_in_scene_descriptions(image, metadata)
 
         image_batch.append(image)
@@ -256,11 +288,15 @@ def build(
             image_batch.clear()
 
     if len(image_batch) > 0:
+        print(f"Обработка пакета из {len(image_batch)} изображений")
         image_batch = batch_caption(image_batch, captioner)
+        print(f"Добавление {len(image_batch)} изображений в базу...")
         vector_store.add_images(image_batch)
+        print(f"Изображения добавлены. Текущее количество в базе: {len(vector_store)}")
         image_batch.clear()
 
-    rev_geo_coder.teardown()
+    # rev_geo_coder.teardown()
+    print(f"Обработка завершена. Всего добавлено изображений: {len(vector_store)}")
     return len(vector_store)
 
 
@@ -283,6 +319,8 @@ if __name__ == '__main__':
             "No album(s) were provided. "
             f"Albums available: \n ** {available}"
         )
+
+    print("Начало сборки...")
 
     build(
         library_type=args.type,
