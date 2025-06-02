@@ -3,6 +3,8 @@ from typing import List, Dict, Union, Optional, Any
 from transformers import pipeline
 from PIL import Image
 
+from semantic_image_search.models.utils import get_device
+
 
 class ImageCaption:
     """Image-to-text captioning class
@@ -21,8 +23,8 @@ class ImageCaption:
 
     def __init__(
         self,
-        model: str = "Salesforce/blip-image-captioning-base",
-        device: str = "cpu",
+        model: str = "Salesforce/blip-image-captioning-large",  # base for cpu
+        device: str = get_device(),
         model_kwargs: Optional[Dict[str, Any]] = None,
         batch_size: int = 8
     ):

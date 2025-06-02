@@ -1,218 +1,73 @@
-from typing import List, Dict, Tuple, Iterator, Any
+import os
+os.environ["HF_HOME"] = os.getenv("MODEL_CACHE_DIR", os.path.expanduser("~/.cache/huggingface"))
+
+from typing import List, Tuple, Iterator
 import argparse
 import warnings
-import os
 
 from tqdm import tqdm
-
 try:
     import pillow_heif
     pillow_heif.register_heif_opener()
     HEIC = True
 except ImportError:
     HEIC = False
-    warnings.warn("pillow-heif is not installed, HEIC images will be skipped. Install with: pip install pillow-heif")
+    warnings.warn("pillow-heif not installed, HEIC images skipped. Install: pip install pillow-heif")
 
-from semantic_image_search.galleries.database import (
-    DigikamReader,
-    MacPhotosReader,
-    Media
-)
+from semantic_image_search.galleries.database import DigikamReader, MacPhotosReader, Media
 from semantic_image_search.geographies import GeonamesReverseGeocoder
 from semantic_image_search.models.caption import ImageCaption
 from semantic_image_search.models.documents import ImageVectorStore
 from semantic_image_search.models.schema import ImageData
 from semantic_image_search.models.utils import get_accelerator
-from semantic_image_search.utils import describe_people_in_scene, describe_geo_location
+from semantic_image_search.utils import describe_people_in_scene
 from semantic_image_search.constants import Supported
 from semantic_image_search.galleries.windows_reader import WindowsPhotosReader
-
+from semantic_image_search.config import CHROMA_PATH, BATCH_SIZE, MODEL_NAME, COLLECTION_NAME, LIBRARY_TYPE, PHOTO_LIB_PATH, GEONAMES_USER, ALBUMS
 
 def batch_caption(images: List[ImageData], captioner: ImageCaption) -> List[ImageData]:
-    """Batch process image-to-text captioning.
-
-    Parameters
-    ----------
-    images : List[ImageData]
-    captioner : ImageCaption
-
-    Returns
-    -------
-    List[ImageData]
-        List of image data objects with updated caption text
-    """
-
     try:
         captions = captioner.caption([img.path for img in images])
         for img, caption in zip(images, captions):
             img.caption = caption
         print(f"Сгенерировано описаний: {len(captions)}")
     except Exception as e:
-        print(f"Ошибка при генерации описаний: {e}")
+        print(f"Ошибка генерации описаний: {e}")
     return images
 
-
-def generate_geo_descriptions(image: ImageData, metadata: Media, geocoder: GeonamesReverseGeocoder) -> ImageData:
-    """Reverse geo-code image location tags and generate a text description.
-
-    Parameters
-    ----------
-    image : ImageData
-    metadata : Media
-        Metadata object from the photo library DB
-    geocoder : GeonamesReverseGeocoder
-
-    Returns
-    -------
-    ImageData
-        Image data objects with updated geo description text
-    """
-
-    if metadata.lat and metadata.lon:
-        try:
-            geos = geocoder.find_nearby(
-                latitude=metadata.lat,
-                longitude=metadata.lon
-            )
-            image.geo_description = describe_geo_location(geos.get("geonames", []))
-        except Exception as e:
-            print(f"Ошибка геокодирования: {e}")
-            image.geo_description = ""
-    return image
-
-
 def generate_people_in_scene_descriptions(image: ImageData, metadata: Media) -> ImageData:
-    """Generate a people-in-scene text description.
-
-    Parameters
-    ----------
-    image : ImageData
-    metadata : Media
-        Metadata object from the photo library DB
-
-    Returns
-    -------
-    ImageData
-    """
-
     if metadata.people_names:
         image.people_description = describe_people_in_scene(metadata.people_names.split(','))
     return image
 
-
-def stream_digikam_albums(
-    photo_library_dir: str,
-    albums: List[str]
-) -> Iterator[Tuple[ImageData, Media]]:
-    """Stream wrapper for the Digikam-based photolibrary reader.
-
-    Parameters
-    ----------
-    photo_library_dir : str
-        Absolute path to the directory containing the SQLite data.
-    albums : List[str]
-        Albums to process
-
-    Yields
-    ------
-    Iterator[Tuple[ImageData, Media]]
-        (Image object, metadata object)
-    """
-
+def stream_digikam_albums(photo_library_dir: str, albums: List[str]) -> Iterator[Tuple[ImageData, Media]]:
     with DigikamReader(photolibrary_path=photo_library_dir) as db:
         album_map = db.albums
         for album in albums:
-            for record in tqdm(
-                db.stream_media_from_album(album_id=album_map[album]["album_id"]),
-                total=album_map[album]["count"],
-                desc=f"Loading {album}"
-            ):
+            for record in tqdm(db.stream_media_from_album(album_id=album_map[album]["album_id"]), total=album_map[album]["count"], desc=f"Loading {album}"):
                 if record.image_file_name.lower().endswith('.heic') and not HEIC:
                     continue
-
                 meta = album_map[record.relative_path]
-                img_data = ImageData(
-                    path=os.path.join(meta["path"], record.image_file_name),
-                    album_name=meta["name"],
-                    file_name=record.image_file_name,
-                    created=record.creation_date,
-                )
-                yield img_data, record
+                yield ImageData(path=os.path.join(meta["path"], record.image_file_name), album_name=meta["name"], file_name=record.image_file_name, created=record.creation_date), record
 
-
-def stream_macos_albums(
-    photo_library_dir: str,
-    albums: List[str]
-) -> Iterator[Tuple[ImageData, Media]]:
-    """Stream wrapper for the MacOS-based photolibrary reader.
-
-    Parameters
-    ----------
-    photo_library_dir : str
-        Absolute path to the directory containing the SQLite data.
-    albums : List[str]
-        Albums to process
-
-    Yields
-    ------
-    Iterator[Tuple[ImageData, Media]]
-        (Image object, metadata object)
-    """
-
+def stream_macos_albums(photo_library_dir: str, albums: List[str]) -> Iterator[Tuple[ImageData, Media]]:
     with MacPhotosReader(photolibrary_path=photo_library_dir) as db:
         album_map = db.albums
         for album in albums:
-            for record in tqdm(
-                db.stream_media_from_album(album_id=album_map[album]["album_id"]),
-                total=album_map[album]["count"],
-                desc=f"Loading {album}"
-            ):
+            for record in tqdm(db.stream_media_from_album(album_id=album_map[album]["album_id"]), total=album_map[album]["count"], desc=f"Loading {album}"):
                 if record.image_file_name.lower().endswith('.heic') and not HEIC:
                     continue
+                yield ImageData(path=os.path.join(record.relative_path, record.image_file_name), album_name=album, file_name=record.image_file_name, created=record.creation_date), record
 
-                img_data = ImageData(
-                    path=os.path.join(record.relative_path, record.image_file_name),
-                    album_name=album,
-                    file_name=record.image_file_name,
-                    created=record.creation_date,
-                )
-                yield img_data, record
-
-
-def stream_windows_albums(
-    photo_library_dir: str,
-    albums: List[str]
-) -> Iterator[Tuple[ImageData, Media]]:
+def stream_windows_albums(photo_library_dir: str, albums: List[str]) -> Iterator[Tuple[ImageData, Media]]:
     reader = WindowsPhotosReader(photolibrary_path=photo_library_dir)
     for album in albums:
-        for record in reader.stream_media_from_album(album_name=str(album)):  # = hash(album)
+        for record in reader.stream_media_from_album(album_name=str(album)):
             if record.image_file_name.lower().endswith('.heic') and not HEIC:
                 continue
-            img_data = ImageData(
-                path=os.path.join(record.relative_path, record.image_file_name),
-                album_name=album,
-                file_name=record.image_file_name,
-                created=record.creation_date,
-            )
-            yield img_data, record
+            yield ImageData(path=os.path.join(record.relative_path, record.image_file_name), album_name=album, file_name=record.image_file_name, created=record.creation_date), record
 
-
-def validate_albums(library_type: Supported, library_dir: str) -> Dict[str, Dict[str, Any]] | None:
-    """Checks for album information in the given library. If no albums are found or the library_type type is not
-    supported then None is returned.
-
-    Parameters
-    ----------
-    library_type : Supported
-        The photo library flavor to ingest
-    library_dir : str
-        Absolute path to the photo library
-
-    Returns
-    -------
-    Dict[str, Dict[str, Any]] | None
-    """
-
+def validate_albums(library_type: Supported, library_dir: str):
     albums = None
     if library_type == Supported.DIGIKAM_PHOTO_LIBRARY:
         with DigikamReader(photolibrary_path=library_dir) as db:
@@ -225,103 +80,54 @@ def validate_albums(library_type: Supported, library_dir: str) -> Dict[str, Dict
             albums = db.albums
     return albums
 
-
-def build(
-    library_type: Supported,
-    library_dir: str,
-    chroma_path: str,
-    albums: List[str],
-    geonames_user: str = os.getenv("GEONAMES_USERNAME"),
-) -> int:
-    """Database builder
-
-    Parameters
-    ----------
-    library_type : Supported
-        The photo library flavor to ingest
-    library_dir : str
-        Absolute path to the photo library
-    chroma_path : str
-        Absolute path to the directory in which to save the ChromaDB assets
-    albums : List[str]
-        Albums to process
-    geonames_user : str
-        Registered Geonames API username, by default os.getenv("GEONAMES_USERNAME")
-
-    Returns
-    -------
-    int
-        Number of records stored in the vector database
-
-    Raises
-    ------
-    TypeError
-        Raised if the photo library is unsupported
-    """
-
-    if library_type == Supported.DIGIKAM_PHOTO_LIBRARY:
-        streamer = stream_digikam_albums
-    elif library_type == Supported.MACOS_PHOTO_LIBRARY:
-        streamer = stream_macos_albums
-    elif library_type == Supported.WINDOWS_PHOTO_LIBRARY:
-        streamer = stream_windows_albums
-    else:
-        raise TypeError(f"{library_type.value} is not yet supported")
+def build(library_type: Supported, library_dir: str, chroma_path: str, albums: List[str], geonames_user: str) -> int:
+    streamers = {
+        Supported.DIGIKAM_PHOTO_LIBRARY: stream_digikam_albums,
+        Supported.MACOS_PHOTO_LIBRARY: stream_macos_albums,
+        Supported.WINDOWS_PHOTO_LIBRARY: stream_windows_albums
+    }
+    if library_type not in streamers:
+        raise TypeError(f"{library_type.value} не поддерживается")
 
     device = get_accelerator()
-    captioner = ImageCaption(device=device, batch_size=16)
-    # rev_geo_coder = GeonamesReverseGeocoder(geonames_user=geonames_user)
-
-    vector_store = ImageVectorStore(chroma_persist_path=chroma_path, model_kwargs={"device": device})
+    captioner = ImageCaption(model="Salesforce/blip-image-captioning-large", device=device, batch_size=16)
+    vector_store = ImageVectorStore(chroma_persist_path=chroma_path, collection_name=COLLECTION_NAME, model_name=MODEL_NAME, model_kwargs={"device": device})
 
     image_batch = []
-    for image, metadata in streamer(photo_library_dir=library_dir, albums=albums):
-        print(f"Обрабатывается изображение: {image.path}")
-        # image = generate_geo_descriptions(image, metadata, geocoder=rev_geo_coder)
+    for image, metadata in streamers[library_type](photo_library_dir=library_dir, albums=albums):
+        print(f"Обрабатывается: {image.path}")
         image = generate_people_in_scene_descriptions(image, metadata)
-
         image_batch.append(image)
-
-        if len(image_batch) > 256:
+        if len(image_batch) >= BATCH_SIZE:
             image_batch = batch_caption(image_batch, captioner)
             vector_store.add_images(image_batch)
             image_batch.clear()
 
-    if len(image_batch) > 0:
+    if image_batch:
         print(f"Обработка пакета из {len(image_batch)} изображений")
         image_batch = batch_caption(image_batch, captioner)
-        print(f"Добавление {len(image_batch)} изображений в базу...")
         vector_store.add_images(image_batch)
-        print(f"Изображения добавлены. Текущее количество в базе: {len(vector_store)}")
-        image_batch.clear()
-
-    # rev_geo_coder.teardown()
-    print(f"Обработка завершена. Всего добавлено изображений: {len(vector_store)}")
+        print(f"Добавлено: {len(vector_store)}")
+    print(f"Завершено. Всего: {len(vector_store)}")
     return len(vector_store)
-
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("--geonames_user", type=str, help="Username for Geonames API")
-    parser.add_argument("--type", type=Supported.argparse, choices=list(Supported))
-    parser.add_argument("--photo_lib_path", type=str, help="Absolute path to the photo library to process")
-    parser.add_argument("--chroma_path", type=str, help="Override the path to the ChromaDB database", required=False)
-    parser.add_argument("--album", action="append", help="Album name to process")
+    parser.add_argument("--geonames_user", type=str, default=GEONAMES_USER, help="Username for Geonames API")
+    parser.add_argument("--type", type=Supported.argparse, choices=list(Supported), default=LIBRARY_TYPE, help="Photo library type")
+    parser.add_argument("--photo_lib_path", type=str, default=PHOTO_LIB_PATH, help="Path to photo library")
+    parser.add_argument("--chroma_path", type=str, default=CHROMA_PATH, help="Path to ChromaDB")
+    parser.add_argument("--album", action="append", default=ALBUMS, help="Album name")
     args = parser.parse_args()
 
     if not args.album:
         available_albums = validate_albums(args.type, args.photo_lib_path)
-        if available_albums is None:
-            raise TypeError(f"`{args.type}` is not supported")
-
+        if not available_albums:
+            raise TypeError(f"`{args.type}` не поддерживается")
         available = '\n ** '.join(k for k, v in available_albums.items() if v["count"] > 0)
-        raise AttributeError(
-            "No album(s) were provided. "
-            f"Albums available: \n ** {available}"
-        )
+        raise AttributeError(f"Альбомы не указаны. Доступные: \n ** {available}")
 
     print("Начало сборки...")
-
     build(
         library_type=args.type,
         library_dir=args.photo_lib_path,

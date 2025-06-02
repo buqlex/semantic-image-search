@@ -17,5 +17,11 @@ def get_accelerator() -> torch.device:
     return torch.device("cpu")
 
 
+def get_device() -> str:
+    if torch.cuda.is_available():
+        return "gpu"
+    else:
+        return "cpu"
+
 print(f"CUDA available: {torch.cuda.is_available()}")
 print(f"Device: {get_accelerator()}")

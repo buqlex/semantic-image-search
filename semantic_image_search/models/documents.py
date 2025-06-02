@@ -17,7 +17,7 @@ class ImageVectorStore:
     chroma_persist_path : str
         Path containing (or to contain) the ChromaDB SQLite file(s)
     collection_name : str, optional
-        ChromaDB collection, by default "semantic-photos"
+        ChromaDB collection, by default "semantic-image-search"
     model_name : str, optional
         Text embedding model, by default "sentence-transformers/all-mpnet-base-v2"
     cache_folder : str, optional
@@ -29,7 +29,7 @@ class ImageVectorStore:
     def __init__(
         self,
         chroma_persist_path: str,
-        collection_name: str = "semantic-photos",
+        collection_name: str = "semantic-image-search",
         model_name: str = "sentence-transformers/all-mpnet-base-v2",
         cache_folder: str = HUGGINGFACE_CACHE,
         model_kwargs: Optional[Dict[str, Any]] = None,
